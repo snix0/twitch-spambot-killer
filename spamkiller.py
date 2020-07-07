@@ -5,7 +5,7 @@ import re
 import json
 import sqlite3
 import datetime
-from threading import Thread
+import threading
 import configparser
 
 try:
@@ -20,10 +20,14 @@ def dasync(func):
     
     @wraps(func)
     def async_func(*args, **kwargs):
-        f = Thread(target = func, args = args, kwargs = kwargs)
+        f = threading.Thread(target = func, args = args, kwargs = kwargs)
         f.start()
         return
     return async_func
+
+# Convert UTC to local time
+def utc_to_local(utc_dt):
+    return utc_dt.replace(tzinfo=datetime.timezone.utc).astimezone(tz=None).replace(hour=0, minute=0, second=0, microsecond=0)
 
 class SpamKiller():
     # Gets config.ini settings
@@ -38,8 +42,6 @@ class SpamKiller():
     timeout_duration = int(config['DEFAULT']['timeout_duration'])
     chat_host = config['DEFAULT']['chat_host']
     chat_port = int(config['DEFAULT']['chat_port'])
-
-
     
     # Persistent database file. Makes file name based on chat channel. Only change to make a combined database for multiple channels.
     database_name = '{}_database.sqlite'.format(chat_chan)
@@ -54,6 +56,9 @@ class SpamKiller():
     user_status = 2 # None = not banned, 1 = timed out, 2 = banned, 3 = whitelisted
     time_stamp = 3
     last_message = int(time.time())
+
+    # Holds last chatters so we can check already posted messages
+    last_chatters = set()
     
     # List of commands which use regular expressions. Only change the left side and make sure to leave the ^
     commands = {
@@ -76,9 +81,10 @@ class SpamKiller():
         for line in lines:
             d = line.strip()
             date = re.search('^([\d]{4}-[\d]{2}-[\d]{2})', d)
-            print('Blacklisting {}'.format(date.group(1)))
             epoch = datetime.datetime.strptime("{}".format(date.group(1)) , "%Y-%m-%d")
+            # epoch = utc_to_local(utc_epoch)
             epoch = int(time.mktime(epoch.timetuple()) / 3600)
+            print('Blacklisting {} -> {}'.format(date.group(1), epoch))
             banned_dates.append(epoch)
 
     whitelist_users = []
@@ -167,8 +173,9 @@ class SpamKiller():
                 print('adding {} to whitelist'.format(row[self.user_name]))
                 self.whitelisted_users.append(row[self.user_name])
             if row[self.user_status] == 1: #blacklisted
-                if row[self.creation_date] not in self.banned_dates:
-                    self.banned_dates.append(row[self.creation_date])
+                epoch = int(row[self.creation_date])
+                if epoch not in self.banned_dates:
+                    self.banned_dates.append(epoch)
         conn.close()
         return self.buster_database
 
@@ -204,9 +211,19 @@ class SpamKiller():
             # Gets the list of chatters in the room, needs to run while mitigation is off
             self.chatter_list = self.get_chatters()
             if self.mitigation_active:
+                while self.last_chatters:
+                    last_usr = self.last_chatters.pop()
+                    name = last_usr[0]
+                    date = last_usr[1]
+                    print("QUEUED - Got creation date: ", name, date)
+
+                    if date in self.banned_dates:
+                        print("QUEUED - Banning {}".format(name))
+                        self.punish(name)
+                    else:
+                        print("QUEUED - Date not in banned dates {}".format(self.banned_dates))
+
                 for chatter in self.chatter_list:
-                    # if chatter in self.checked_users:
-                        # continue
                     if chatter in self.banned_users:
                         continue
                     
@@ -230,7 +247,7 @@ class SpamKiller():
                         print('Current number of banned users: {!s}'.format(len(self.banned_users)))
                     # else:
                         # self.checked_users.append(chatter)
-            time.sleep(1)
+            time.sleep(1.5)
 
     # Thread for reading chat and watching for user commands
     @dasync
@@ -260,8 +277,32 @@ class SpamKiller():
         # Processes possible commands from the command dictionary
         print("Process chat:", user, msg)
 
+        # TODO use twitch API to check follows
+        if user == "streamlabs":
+            follower = re.match('! Thank you for following (.*)!', msg)
+            if follower:
+                self.whitelisted_users.append(follower.group(1))
+
+                with open("whitelist.txt", "a") as f:
+                    f.write("\n" + follower.group(1))
+
+                print("Automatically added {} to whitelist".format(follower.group(1)))
+
         # Ban user if blacklist
         if self.mitigation_active == 1 and user not in self.banned_users and user not in self.whitelisted_users:
+            # print("Mitigation activated. Processing last chatters:", self.last_chatters)
+            # while self.last_chatters:
+                # last_usr = self.last_chatters.pop()
+                # try:
+                    # d = get_creation_date(last_usr)
+                    # print("QUEUED - Got creation date: ", last_usr, d)
+
+                    # if d in self.banned_dates:
+                        # print("Banning {}".format(last_usr))
+                        # self.punish(last_usr)
+                # except:
+                    # print("QUEUED - Failed getting creation date for", last_usr)
+
             print("Checking if {} should be banned".format(user))
             user_date = ""
             try:
@@ -273,8 +314,15 @@ class SpamKiller():
                     self.punish(user)
             except:
                 print("Failed getting creation date")
+        elif user not in self.banned_users and user not in self.whitelisted_users and user not in self.last_chatters and self.mitigation_active == 0:
+            if len(self.last_chatters) > 25:
+                self.last_chatters.pop()
 
-        # END
+            self.last_chatters.add((user, get_creation_date(user)))
+
+            print("Mitigation not activated. Last Chatters:", self.last_chatters)
+
+            #TODO need to clear out last chatters
 
         for command,action in self.commands.items():
             if re.search(command, msg):
@@ -286,7 +334,7 @@ class SpamKiller():
                         epoch = datetime.datetime.strptime("{}".format(input.group(1)) , "%Y-%m-%d")
                         epoch = int(time.mktime(epoch.timetuple()) / 3600)
 
-                        self.chat(self.s, 'Blacklisting {}'.format(epoch))
+                        self.chat(self.s, 'Blacklisting {} -> {}'.format(input.group(1), epoch))
                         self.banned_dates.append(epoch)
                         print("Banned dates changed to:", self.banned_dates)
                     else:
@@ -476,7 +524,7 @@ class SpamKiller():
         
 # Function for returning the user's creation date
 def get_creation_date(user):
-    headers = { 'Client-ID' : self.client_id,
+    headers = { 'Client-ID' : CLIENT_ID,
                 'Accept': 'application/vnd.twitchtv.v5+json' }
     # Loop ends when a value is returned
     while 1:
@@ -494,6 +542,7 @@ def get_creation_date(user):
                 json.loads(r.text)['users'][0]['created_at']
             )
             epoch = datetime.datetime.strptime("{}".format(date.group(1)) , "%Y-%m-%d")
+            epoch = utc_to_local(epoch)
             epoch = int(time.mktime(epoch.timetuple()) / 3600)
             # except:
                 # print('Failed to get time')
