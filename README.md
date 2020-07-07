@@ -25,3 +25,6 @@ the spambots raiding a channel will share a small subset of account creation dat
 
 ### Configuration Details
 - TODO
+
+### Disclaimer
+This is a work in progress
