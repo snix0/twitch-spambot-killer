@@ -1,7 +1,6 @@
+### Overview
 Twitch bot which automatically bans spambots based on user creation date.
-
-Warning: This approach can cause legitimate users to be banned (whitelist can be used), but based on public spambot deployment tools,
-the spambots raiding a channel will share a small subset of account creation dates.
+Most spambots raiding a channel will share a small set of user creation dates; this program takes advantage of this commonality in order to detect and ban spambots.
 
 ### Features
 - Last chatter queue for banning users active in the chat prior to activating bot mitigation
@@ -27,4 +26,4 @@ the spambots raiding a channel will share a small subset of account creation dat
 - TODO
 
 ### Disclaimer
-This is a work in progress
+This is a work in progress and the spambot detection isn't very sophisticated yet.
